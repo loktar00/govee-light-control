@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "govee-h6010"
+version = "0.1.0"
+description = "Local Bluetooth control for Govee H6010 LED bulbs — no cloud, no API key"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["bleak>=0.21"]
+
+[project.optional-dependencies]
+mcp = ["mcp[cli]>=1.0"]
+
+[project.scripts]
+govee = "govee_h6010.cli:main"
+govee-mcp = "govee_h6010.mcp_server:main"
+
+[project.urls]
+Repository = "https://github.com/user/govee-h6010"
