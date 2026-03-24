@@ -20,7 +20,8 @@ Works over Bluetooth Low Energy (BLE) directly from your computer. Includes a CL
 ## Quick Start
 
 ```bash
-pip install govee-h6010
+# Install from source (or pip install govee-h6010 if published to PyPI)
+pip install -e .
 
 # Discover your bulbs
 govee scan
@@ -136,10 +137,20 @@ The package includes an MCP (Model Context Protocol) server that lets AI agents 
 pip install "govee-h6010[mcp]"
 ```
 
+### Running the Server
+
+Start the MCP server (SSE transport on port 8765):
+
+```bash
+govee-mcp
+```
+
+The server runs at `http://localhost:8765` with the SSE endpoint at `/sse`.
+
 ### Claude Code Setup
 
 ```bash
-claude mcp add govee-h6010 govee-mcp
+claude mcp add govee-h6010 --transport sse --url http://localhost:8765/sse
 ```
 
 ### Claude Desktop Setup
@@ -150,7 +161,7 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 {
   "mcpServers": {
     "govee-h6010": {
-      "command": "govee-mcp"
+      "url": "http://localhost:8765/sse"
     }
   }
 }
@@ -181,7 +192,8 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 
 1. **Install the package:**
    ```bash
-   pip install govee-h6010
+   # From the project directory
+   pip install -e .
    ```
 
 2. **Scan for devices** (make sure Bluetooth is on):
