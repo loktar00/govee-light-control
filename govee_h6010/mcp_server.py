@@ -29,7 +29,7 @@ from .protocol import (
 )
 from .effects import EFFECTS, run_effect as _run_effect
 
-mcp = FastMCP("govee-h6010")
+mcp = FastMCP("govee-h6010", host="0.0.0.0", port=8765)
 
 
 @mcp.tool()
@@ -205,7 +205,7 @@ async def flash_device(device: str = "", seconds: int = 5) -> dict:
 
 def main():
     """Entry point for govee-mcp console script."""
-    mcp.run(transport="stdio")
+    mcp.run(transport="sse")
 
 
 if __name__ == "__main__":
