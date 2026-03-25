@@ -220,6 +220,10 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
    ```bash
    govee-mcp
    ```
+   If `govee-mcp` is not recognized, your Python Scripts directory isn't on your PATH. Use this instead:
+   ```bash
+   python -m govee_h6010.mcp_server
+   ```
 
 2. **Add to Claude Code** (in a separate terminal):
    ```bash
