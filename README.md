@@ -188,13 +188,19 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 
 ## Setup Guide
 
+### Prerequisites
+
+- Python 3.10+
+- Bluetooth enabled on your machine
+- The repo cloned locally
+
 ### First Time Setup
 
-1. **Install the package:**
+1. **Install the package** (from the repo root):
    ```bash
-   # From the project directory
-   pip install -e .
+   pip install -e ".[mcp]"
    ```
+   This installs everything — BLE control (`bleak`) and the MCP server (`mcp[cli]`). Drop the `[mcp]` extra if you only need the CLI.
 
 2. **Scan for devices** (make sure Bluetooth is on):
    ```bash
@@ -206,6 +212,29 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
    govee all on
    govee all color ff0000
    govee all off
+   ```
+
+### MCP Server Setup
+
+1. **Start the MCP server** (runs on `http://localhost:8765`):
+   ```bash
+   govee-mcp
+   ```
+
+2. **Add to Claude Code** (in a separate terminal):
+   ```bash
+   claude mcp add govee-h6010 --transport sse --url http://localhost:8765/sse
+   ```
+
+3. **Or add to Claude Desktop** — add to your `claude_desktop_config.json`:
+   ```json
+   {
+     "mcpServers": {
+       "govee-h6010": {
+         "url": "http://localhost:8765/sse"
+       }
+     }
+   }
    ```
 
 ### Device Mapping (for positional effects)
