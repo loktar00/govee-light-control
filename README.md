@@ -2,10 +2,11 @@
 
 Local Bluetooth control for Govee H6010 LED bulbs. No cloud, no internet, no API key required.
 
-Works over Bluetooth Low Energy (BLE) directly from your computer. Includes a CLI with JSON output for scripting, an MCP server for AI agent integration, 10 animated lighting effects, and 2D spatial mapping for positional effects.
+Works over Bluetooth Low Energy (BLE) directly from your computer. Includes a REST API server with persistent connections for instant control over your network, a CLI with JSON output for scripting, an MCP server for AI agent integration, 10 animated lighting effects, and 2D spatial mapping for positional effects.
 
 ## Features
 
+- **REST API server** — persistent BLE connections for instant (~250ms) control from any device on your network
 - **Offline control** — works without internet using BLE
 - **RGB color** — full 16M color support
 - **Dedicated white LEDs** — warm (2700K) to cool (6500K) via hardware white LEDs, not RGB mixing
@@ -125,6 +126,78 @@ Errors also return JSON when in `--json` mode:
 ```bash
 govee color xyz --json
 # {"ok": false, "error": "Invalid hex color: xyz"}
+```
+
+## REST API Server
+
+The REST API server maintains persistent BLE connections to all your bulbs, so commands execute instantly (~250ms for all 12 bulbs) instead of the usual 3-5 seconds per device. Any device on your local network can control the lights with simple HTTP calls.
+
+### Starting the Server
+
+```bash
+govee-server                # Starts on port 8766
+govee-server --port 8080    # Custom port
+govee serve                 # Same thing via the CLI
+```
+
+On startup, the server connects to all cached devices and keeps the connections alive with background keepalive packets. Once connected, all commands are near-instant.
+
+### Endpoints
+
+#### Device Management
+
+| Method | Path | Body | Description |
+|--------|------|------|-------------|
+| GET | `/api/devices` | — | List devices with connection status |
+| POST | `/api/scan` | — | BLE scan, reconnect pool |
+
+#### Single Device
+
+| Method | Path | Body | Description |
+|--------|------|------|-------------|
+| POST | `/api/on` | `{"device":"1"}` | Power on |
+| POST | `/api/off` | `{"device":"1"}` | Power off |
+| POST | `/api/color` | `{"device":"1","hex":"#ff0000"}` | Set RGB color |
+| POST | `/api/brightness` | `{"device":"1","value":80}` | Set brightness 1-100 |
+| POST | `/api/white` | `{"device":"1","kelvin":4000}` | Set white temperature |
+| POST | `/api/status` | `{"device":"1"}` | Query connection state |
+
+The `device` field is optional if you only have one bulb. It accepts an index, MAC address, or name suffix.
+
+#### Batch (All Devices)
+
+| Method | Path | Body | Description |
+|--------|------|------|-------------|
+| POST | `/api/all/on` | — | All lights on |
+| POST | `/api/all/off` | — | All lights off |
+| POST | `/api/all/color` | `{"hex":"#ff0000"}` | All same color |
+| POST | `/api/all/white` | `{"kelvin":4000}` | All same white temp |
+| POST | `/api/all/brightness` | `{"value":100}` | All same brightness |
+
+#### Effects
+
+| Method | Path | Body | Description |
+|--------|------|------|-------------|
+| GET | `/api/effects` | — | List available effects |
+| POST | `/api/effect` | `{"name":"spectrum","duration":15}` | Run an effect |
+
+Effect body fields: `name` (required), `duration` (seconds, default 10), `speed` (multiplier, default 1.0), `color` (hex string), `origin` (device for ripple/chase).
+
+### Examples
+
+```bash
+# Turn all lights on
+curl -X POST http://localhost:8766/api/all/on
+
+# Set warm white at full brightness
+curl -X POST http://localhost:8766/api/all/brightness -d '{"value":100}'
+curl -X POST http://localhost:8766/api/all/white -d '{"kelvin":3000}'
+
+# Run a party effect for 30 seconds
+curl -X POST http://localhost:8766/api/effect -d '{"name":"party","duration":30}'
+
+# Check device status
+curl http://localhost:8766/api/devices
 ```
 
 ## AI Agent Integration (MCP)

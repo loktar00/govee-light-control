@@ -658,3 +658,66 @@ async def run_effect(name, duration=10, speed=1.0, origin=None, color=None, quie
         "duration": duration,
         "devices": connected_count,
     }
+
+
+async def run_effect_on_pool(pool, devices, name, duration=10, speed=1.0,
+                             origin=None, color=None):
+    """Run an effect on an already-connected pool (no connection overhead).
+
+    Parameters
+    ----------
+    pool : PersistentPool or ConnectionPool
+        Must have write_all / write_each / clients.
+    devices : list[dict]
+        Device list (needed for 2D effects).
+    name : str
+        Effect name.
+    duration, speed, origin, color : same as run_effect.
+    """
+    if name not in EFFECTS:
+        raise GoveeError(
+            f"Unknown effect: {name}. Available: {', '.join(EFFECTS.keys())}"
+        )
+
+    extra = color
+
+    # Resolve origin
+    origin_idx = None
+    if origin is not None:
+        needle = str(origin).lower()
+        for idx, d in enumerate(devices):
+            if d["address"].lower() == needle or \
+               needle in d.get("name", "").lower() or \
+               d.get("name", "").split("_")[-1].lower() == needle or \
+               d["address"].lower().endswith(needle):
+                origin_idx = idx
+                break
+        if origin_idx is None:
+            try:
+                origin_idx = int(origin) - 1
+            except ValueError:
+                raise GoveeError(f"Could not find device matching '{origin}'")
+
+    if name == "spectrum":
+        await fx_spectrum(pool, speed, duration, quiet=True)
+    elif name == "wave":
+        await fx_wave(pool, speed, duration, quiet=True)
+    elif name == "breathe":
+        await fx_breathe(pool, speed, duration, extra, quiet=True)
+    elif name == "party":
+        await fx_party(pool, speed, duration, quiet=True)
+    elif name == "candle":
+        await fx_candle(pool, speed, duration, quiet=True)
+    elif name == "sunrise":
+        mins = float(extra) if extra else 5
+        await fx_sunrise(pool, mins, quiet=True)
+    elif name == "ripple":
+        await fx_ripple(pool, devices, speed, duration, extra, origin_idx, quiet=True)
+    elif name == "chase":
+        await fx_chase(pool, devices, speed, duration, origin_idx, quiet=True)
+    elif name == "rain":
+        await fx_rain(pool, devices, speed, duration, extra, quiet=True)
+    elif name == "wipe":
+        await fx_wipe(pool, devices, speed, duration, quiet=True)
+
+    return {"effect": name, "duration": duration, "devices": len(pool.clients)}

@@ -458,3 +458,230 @@ class ConnectionPool:
     async def __aexit__(self, *exc):
         self.stop_keepalive()
         await self.disconnect_all()
+
+
+# ─── Persistent Pool ─────────────────────────────────────────────────────────
+
+class PersistentPool:
+    """Long-lived BLE connection pool for instant command dispatch.
+
+    Unlike ConnectionPool (scoped to a single effect run), PersistentPool stays
+    connected indefinitely with auto-reconnect.  Used by the REST API server and
+    MCP server for sub-100 ms command latency.
+    """
+
+    def __init__(self, devices, max_concurrent=MAX_CONCURRENT):
+        self.devices = devices
+        self.clients = {}           # {address: BleakClient}
+        self.failed = set()
+        self.sem = asyncio.Semaphore(max_concurrent)
+        self._ka_task = None
+        self._lock = asyncio.Lock()
+
+    # ── lifecycle ────────────────────────────────────────────────────────
+
+    async def start(self):
+        """Connect to all cached devices and begin keepalive loop.
+
+        Returns (connected_count, total_count).
+        """
+        result = await self._connect_all()
+        self._ka_task = asyncio.create_task(self._keepalive_loop())
+        return result
+
+    async def stop(self):
+        """Disconnect everything and cancel keepalive."""
+        if self._ka_task:
+            self._ka_task.cancel()
+            self._ka_task = None
+        for addr, client in list(self.clients.items()):
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        self.clients.clear()
+
+    # ── connect ──────────────────────────────────────────────────────────
+
+    async def _connect_all(self):
+        async def _connect(dev):
+            addr = dev["address"]
+            async with self.sem:
+                for attempt in range(3):
+                    try:
+                        client = BleakClient(addr, timeout=10)
+                        await client.connect()
+                        await client.write_gatt_char(
+                            GOVEE_WRITE_UUID, KEEPALIVE_BYTES, response=False)
+                        await asyncio.sleep(0.05)
+                        self.clients[addr] = client
+                        self.failed.discard(addr)
+                        return True
+                    except Exception:
+                        if attempt < 2:
+                            await asyncio.sleep(1)
+                self.failed.add(addr)
+                return False
+
+        tasks = [_connect(d) for d in self.devices]
+        results = await asyncio.gather(*tasks)
+        return sum(1 for r in results if r), len(self.devices)
+
+    async def _reconnect(self, addr):
+        async with self._lock:
+            old = self.clients.pop(addr, None)
+            if old:
+                try:
+                    await old.disconnect()
+                except Exception:
+                    pass
+            try:
+                client = BleakClient(addr, timeout=5)
+                await client.connect()
+                await client.write_gatt_char(
+                    GOVEE_WRITE_UUID, KEEPALIVE_BYTES, response=False)
+                self.clients[addr] = client
+                self.failed.discard(addr)
+            except Exception:
+                self.failed.add(addr)
+
+    # ── keepalive ────────────────────────────────────────────────────────
+
+    async def _keepalive_loop(self):
+        while True:
+            await asyncio.sleep(0.5)
+            for addr, client in list(self.clients.items()):
+                try:
+                    if client.is_connected:
+                        await client.write_gatt_char(
+                            GOVEE_WRITE_UUID, KEEPALIVE_BYTES, response=False)
+                    else:
+                        # remove stale client, don't aggressively reconnect
+                        self.clients.pop(addr, None)
+                        self.failed.add(addr)
+                except Exception:
+                    self.clients.pop(addr, None)
+                    self.failed.add(addr)
+
+    # ── send ─────────────────────────────────────────────────────────────
+
+    async def send(self, address, packet):
+        """Send a packet to one device.  Instant if already connected."""
+        client = self.clients.get(address)
+        if client:
+            try:
+                if client.is_connected:
+                    await client.write_gatt_char(
+                        GOVEE_WRITE_UUID, packet, response=False)
+                    return True
+            except Exception:
+                self.clients.pop(address, None)
+        # reconnect under semaphore and retry once
+        async with self.sem:
+            await self._reconnect(address)
+            client = self.clients.get(address)
+            if client:
+                try:
+                    await client.write_gatt_char(
+                        GOVEE_WRITE_UUID, packet, response=False)
+                    return True
+                except Exception:
+                    self.clients.pop(address, None)
+            # last resort: one-shot connection
+            return await send_command(address, packet)
+
+    async def send_all(self, packet):
+        """Send same packet to all devices.
+
+        Connected devices get instant writes first.  Disconnected devices
+        are then handled with concurrency control to avoid flooding BLE.
+        """
+        connected = []
+        disconnected = []
+        for d in self.devices:
+            addr = d["address"]
+            client = self.clients.get(addr)
+            if client and client.is_connected:
+                connected.append(d)
+            else:
+                disconnected.append(d)
+
+        ok = 0
+        fail = 0
+
+        # fast path: blast to all connected devices (instant)
+        if connected:
+            async def _fast(dev):
+                try:
+                    client = self.clients[dev["address"]]
+                    await client.write_gatt_char(
+                        GOVEE_WRITE_UUID, packet, response=False)
+                    return True
+                except Exception:
+                    self.clients.pop(dev["address"], None)
+                    return False
+            results = await asyncio.gather(*[_fast(d) for d in connected])
+            ok += sum(1 for r in results if r)
+            fail += sum(1 for r in results if not r)
+
+        # slow path: reconnect+send with concurrency control
+        if disconnected:
+            async def _slow(dev):
+                async with self.sem:
+                    try:
+                        await self._reconnect(dev["address"])
+                        client = self.clients.get(dev["address"])
+                        if client:
+                            await client.write_gatt_char(
+                                GOVEE_WRITE_UUID, packet, response=False)
+                            return True
+                        return await send_command(dev["address"], packet)
+                    except Exception:
+                        return False
+            results = await asyncio.gather(*[_slow(d) for d in disconnected])
+            ok += sum(1 for r in results if r is True)
+            fail += sum(1 for r in results if r is not True)
+
+        return ok, fail
+
+    async def send_each(self, packet_fn):
+        """Send per-device packet.  packet_fn(index, address) -> bytes."""
+        async def _one(i, dev):
+            pkt = packet_fn(i, dev["address"])
+            return await self.send(dev["address"], pkt)
+        tasks = [_one(i, d) for i, d in enumerate(self.devices)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        ok = sum(1 for r in results if r is True)
+        return ok, len(results) - ok
+
+    # ── ConnectionPool-compatible interface (for effects) ──────────────
+
+    async def write_all(self, packet):
+        """Write same packet to all connected devices (ConnectionPool compat)."""
+        for addr, client in list(self.clients.items()):
+            try:
+                if client.is_connected:
+                    await client.write_gatt_char(
+                        GOVEE_WRITE_UUID, packet, response=False)
+            except Exception:
+                self.clients.pop(addr, None)
+                self.failed.add(addr)
+
+    async def write_each(self, packet_fn):
+        """Write per-device packet (ConnectionPool compat).
+
+        packet_fn(index, address) -> bytes.
+        """
+        for i, (addr, client) in enumerate(list(self.clients.items())):
+            try:
+                pkt = packet_fn(i, addr)
+                if client.is_connected:
+                    await client.write_gatt_char(
+                        GOVEE_WRITE_UUID, pkt, response=False)
+            except Exception:
+                self.clients.pop(addr, None)
+                self.failed.add(addr)
+
+    def connected_addresses(self):
+        """Return set of addresses with active connections."""
+        return {a for a, c in self.clients.items() if c.is_connected}

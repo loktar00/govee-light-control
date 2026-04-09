@@ -63,6 +63,7 @@ USAGE = f"""Govee H6010 BLE Control CLI — no internet required
 Commands:
   govee scan                          Discover nearby Govee devices
   govee list                          Show cached devices (no scan)
+  govee serve [--port 8766]           Start REST API server (persistent BLE)
   govee on [device]                   Turn on
   govee off [device]                  Turn off
   govee brightness <1-100> [device]   Set brightness
@@ -524,17 +525,7 @@ async def cmd_fx_wrapper(fx_name, args):
     if not json_mode:
         print(f"Connecting to {len(devices)} devices (3 retries each)...")
 
-    await cmd_fx(
-        fx_name=fx_name,
-        devices=devices,
-        speed=speed,
-        duration=duration,
-        origin=origin,
-        extra=extra,
-        on_connect=on_connect,
-        on_pool_ready=on_pool_ready,
-        quiet=json_mode,
-    )
+    await cmd_fx(fx_name, args, quiet=json_mode, on_connect=on_pool_ready)
 
     if json_mode:
         json_output({"ok": True, "effect": fx_name, "duration": duration})
@@ -624,6 +615,18 @@ async def async_main():
 
     elif cmd == "status":
         await cmd_status(args[1] if len(args) > 1 else None)
+
+    elif cmd == "serve":
+        from .server import main as serve_main
+        port_arg = None
+        for i, a in enumerate(args[1:], 1):
+            if a == "--port" and i < len(args) - 1:
+                port_arg = args[i + 1]
+        if port_arg:
+            sys.argv = ["govee-server", "--port", port_arg]
+        else:
+            sys.argv = ["govee-server"]
+        serve_main()
 
     else:
         die(f"Unknown command: {cmd}\nRun 'govee help' for usage.")

@@ -24,12 +24,47 @@ from .protocol import (
     parse_hex_color,
     get_all_devices,
     GoveeError,
+    PersistentPool,
     GOVEE_WRITE_UUID,
     KEEPALIVE_BYTES,
 )
 from .effects import EFFECTS, run_effect as _run_effect
 
 mcp = FastMCP("govee-h6010", host="0.0.0.0", port=8765)
+
+# ─── Persistent pool for instant commands ────────────────────────────────────
+
+_pool: PersistentPool | None = None
+
+
+async def _ensure_pool():
+    """Lazily start the persistent pool on first use."""
+    global _pool
+    if _pool is not None:
+        return _pool
+    devices = load_cache()
+    if not devices:
+        return None
+    _pool = PersistentPool(devices)
+    await _pool.start()
+    return _pool
+
+
+async def _send(address, packet):
+    """Send via pool if available, otherwise fall back to one-shot."""
+    p = await _ensure_pool()
+    if p:
+        return await p.send(address, packet)
+    return await send_command(address, packet)
+
+
+async def _send_all(devices, packet):
+    """Send to all via pool if available, otherwise fall back."""
+    p = await _ensure_pool()
+    if p:
+        ok, fail = await p.send_all(packet)
+        return ok, fail, []
+    return await send_to_all_simple(devices, packet)
 
 
 @mcp.tool()
@@ -57,7 +92,7 @@ async def power_on(device: str = "") -> dict:
     """Turn on a Govee light. Device can be MAC address, name suffix, or index number. Empty string uses first/only device."""
     try:
         dev = await resolve_device(device or None)
-        await send_command(dev["address"], power_packet(True))
+        await _send(dev["address"], power_packet(True))
         return {"ok": True, "device": dev["address"], "action": "on"}
     except GoveeError as e:
         return {"ok": False, "error": str(e)}
@@ -68,7 +103,7 @@ async def power_off(device: str = "") -> dict:
     """Turn off a Govee light. Device can be MAC address, name suffix, or index number."""
     try:
         dev = await resolve_device(device or None)
-        await send_command(dev["address"], power_packet(False))
+        await _send(dev["address"], power_packet(False))
         return {"ok": True, "device": dev["address"], "action": "off"}
     except GoveeError as e:
         return {"ok": False, "error": str(e)}
@@ -81,7 +116,7 @@ async def set_brightness(value: int, device: str = "") -> dict:
         return {"ok": False, "error": "Brightness must be 1-100"}
     try:
         dev = await resolve_device(device or None)
-        await send_command(dev["address"], brightness_packet(value))
+        await _send(dev["address"], brightness_packet(value))
         return {"ok": True, "device": dev["address"], "brightness": value}
     except GoveeError as e:
         return {"ok": False, "error": str(e)}
@@ -93,7 +128,7 @@ async def set_color(hex_color: str, device: str = "") -> dict:
     try:
         r, g, b = parse_hex_color(hex_color)
         dev = await resolve_device(device or None)
-        await send_command(dev["address"], color_packet(r, g, b))
+        await _send(dev["address"], color_packet(r, g, b))
         return {"ok": True, "device": dev["address"], "color": f"#{hex_color.lstrip('#')}"}
     except GoveeError as e:
         return {"ok": False, "error": str(e)}
@@ -107,7 +142,7 @@ async def set_white(kelvin: int = 4000, device: str = "") -> dict:
     try:
         dev = await resolve_device(device or None)
         warmth = kelvin_to_warmth(kelvin)
-        await send_command(dev["address"], white_packet(warmth))
+        await _send(dev["address"], white_packet(warmth))
         return {"ok": True, "device": dev["address"], "temperature": kelvin}
     except GoveeError as e:
         return {"ok": False, "error": str(e)}
@@ -118,7 +153,7 @@ async def all_on() -> dict:
     """Turn on ALL Govee lights."""
     try:
         devices = get_all_devices()
-        ok, fail, _ = await send_to_all_simple(devices, power_packet(True))
+        ok, fail, _ = await _send_all(devices, power_packet(True))
         return {"ok": True, "action": "on", "succeeded": ok, "failed": fail}
     except GoveeError as e:
         return {"ok": False, "error": str(e)}
@@ -129,7 +164,7 @@ async def all_off() -> dict:
     """Turn off ALL Govee lights."""
     try:
         devices = get_all_devices()
-        ok, fail, _ = await send_to_all_simple(devices, power_packet(False))
+        ok, fail, _ = await _send_all(devices, power_packet(False))
         return {"ok": True, "action": "off", "succeeded": ok, "failed": fail}
     except GoveeError as e:
         return {"ok": False, "error": str(e)}
@@ -141,7 +176,7 @@ async def all_color(hex_color: str) -> dict:
     try:
         r, g, b = parse_hex_color(hex_color)
         devices = get_all_devices()
-        ok, fail, _ = await send_to_all_simple(devices, color_packet(r, g, b))
+        ok, fail, _ = await _send_all(devices, color_packet(r, g, b))
         return {"ok": True, "action": "color", "color": f"#{hex_color.lstrip('#')}", "succeeded": ok, "failed": fail}
     except GoveeError as e:
         return {"ok": False, "error": str(e)}
@@ -155,7 +190,7 @@ async def all_white(kelvin: int = 4000) -> dict:
     try:
         devices = get_all_devices()
         warmth = kelvin_to_warmth(kelvin)
-        ok, fail, _ = await send_to_all_simple(devices, white_packet(warmth))
+        ok, fail, _ = await _send_all(devices, white_packet(warmth))
         return {"ok": True, "action": "white", "temperature": kelvin, "succeeded": ok, "failed": fail}
     except GoveeError as e:
         return {"ok": False, "error": str(e)}
@@ -184,19 +219,16 @@ async def run_effect(name: str, duration: int = 10, speed: float = 1.0, color: s
 async def flash_device(device: str = "", seconds: int = 5) -> dict:
     """Flash a specific device bright white for identification. Turns on, goes bright white, waits, then turns off."""
     try:
-        from bleak import BleakClient
         dev = await resolve_device(device or None)
-        async with BleakClient(dev["address"], timeout=10) as client:
-            await client.write_gatt_char(GOVEE_WRITE_UUID, KEEPALIVE_BYTES, response=False)
-            await asyncio.sleep(0.05)
-            await client.write_gatt_char(GOVEE_WRITE_UUID, power_packet(True), response=False)
-            await asyncio.sleep(0.05)
-            await client.write_gatt_char(GOVEE_WRITE_UUID, brightness_packet(100), response=False)
-            await asyncio.sleep(0.05)
-            await client.write_gatt_char(GOVEE_WRITE_UUID, white_packet(0x01), response=False)
-            await asyncio.sleep(seconds)
-            await client.write_gatt_char(GOVEE_WRITE_UUID, power_packet(False), response=False)
-        return {"ok": True, "device": dev["address"], "name": dev.get("name", ""), "flashed_seconds": seconds}
+        addr = dev["address"]
+        await _send(addr, power_packet(True))
+        await asyncio.sleep(0.05)
+        await _send(addr, brightness_packet(100))
+        await asyncio.sleep(0.05)
+        await _send(addr, white_packet(0x01))
+        await asyncio.sleep(seconds)
+        await _send(addr, power_packet(False))
+        return {"ok": True, "device": addr, "name": dev.get("name", ""), "flashed_seconds": seconds}
     except GoveeError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:

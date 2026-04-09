@@ -12,6 +12,7 @@ from .protocol import (
     kelvin_to_warmth,
     make_packet,
     ConnectionPool,
+    PersistentPool,
     load_cache,
     save_cache,
     load_map,
