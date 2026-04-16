@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
 from .protocol import (
     scan_devices,
@@ -294,7 +294,21 @@ routes = [
     Route("/api/effect", api_effect, methods=["POST"]),
 ]
 
-app = Starlette(routes=routes, lifespan=lifespan)
+
+def _build_app(include_mcp=False):
+    """Build the Starlette app, optionally mounting the MCP SSE server."""
+    all_routes = list(routes)
+    if include_mcp:
+        try:
+            from .mcp_server import mcp
+            all_routes.append(Mount("/", app=mcp.sse_app()))
+        except ImportError:
+            print("MCP not available (pip install govee-h6010[mcp])")
+    return Starlette(routes=all_routes, lifespan=lifespan)
+
+
+# Default app without MCP (for direct uvicorn usage)
+app = _build_app(include_mcp=False)
 
 
 def main():
@@ -302,13 +316,20 @@ def main():
     import uvicorn
 
     port = DEFAULT_PORT
+    include_mcp = True
     for i, arg in enumerate(sys.argv[1:], 1):
         if arg == "--port" and i < len(sys.argv) - 1:
             port = int(sys.argv[i + 1])
+        elif arg == "--no-mcp":
+            include_mcp = False
 
-    print(f"Govee REST API server starting on http://0.0.0.0:{port}")
-    print(f"Endpoints: GET /api/devices, POST /api/on, /api/off, /api/color, ...")
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    server_app = _build_app(include_mcp=include_mcp)
+
+    print(f"Govee server starting on http://0.0.0.0:{port}")
+    print(f"  REST API: /api/...")
+    if include_mcp:
+        print(f"  MCP SSE:  /sse")
+    uvicorn.run(server_app, host="0.0.0.0", port=port, log_level="warning")
 
 
 if __name__ == "__main__":
